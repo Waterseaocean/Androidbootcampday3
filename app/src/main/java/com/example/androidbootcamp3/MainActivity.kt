@@ -1,5 +1,7 @@
 package com.example.androidbootcamp3
 
+import android.app.Application
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -21,15 +23,19 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
@@ -41,8 +47,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.preferencesDataStore
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -84,8 +92,11 @@ fun GameApp() {
     NavHost(navController = navController, startDestination = "start") {
         composable("start") { StartScreen(navController) }
         composable("difficulty") { DifficultySelectionScreen(navController) }
-        composable("game/{difficulty}") { backStackEntry ->
-            val difficulty = backStackEntry.arguments?.getString("difficulty")?.toInt() ?: 1
+        composable(
+            route = "game/{difficulty}",
+            arguments = listOf(navArgument("difficulty") { type = NavType.IntType })
+        ) { backStackEntry ->
+            val difficulty = backStackEntry.arguments?.getInt("difficulty") ?: 1
             GameScreen(navController, difficulty)
         }
         // NavHost の定義を変更して、isWin パラメータを適切に取得できるようにする
@@ -145,6 +156,16 @@ fun StartScreen(navController: NavController) {
                 colors = ButtonDefaults.buttonColors(containerColor = Color.Blue)) {
                 Text(text = "スタート", fontSize = 16.sp)
             }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // APIデータ画面に遷移するボタン
+            Button(
+                onClick = { navController.navigate("apiData") }, // apiData画面へ遷移
+                colors = ButtonDefaults.buttonColors(containerColor = Color.Green)
+            ) {
+                Text(text = "APIデータ", fontSize = 16.sp)
+            }
         }
     }
 }
@@ -198,20 +219,21 @@ fun DifficultySelectionScreen(navController: NavController) {
 
 @Composable
 fun GameScreen(navController: NavController, difficulty: Int) {
-    var score by remember { mutableStateOf(0) }
+    val viewModel: GameViewModel = viewModel()
+    val score by viewModel.score.collectAsState(initial = 0)
     val targetScore = difficulty
     var options by remember { mutableStateOf(listOf("元気", "元氣", "π気", "π氣").shuffled()) }
-    val viewModel: GameViewModel = viewModel() // ViewModel を取得
+
+    // スコアのリセット
+    LaunchedEffect(Unit) {
+        viewModel.resetScore()
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
-
         Image(
             painter = painterResource(R.drawable.genkidama),
             contentDescription = null,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp) // 画面の端から少し余白を取る
-                .aspectRatio(16 / 23f), // 画像のアスペクト比を設定
+            modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop
         )
 
@@ -236,29 +258,27 @@ fun GameScreen(navController: NavController, difficulty: Int) {
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // ボタン間のスペースを指定して選択肢を垂直に並べる
+            // ボタンの選択肢を表示
             Column(
-                verticalArrangement = Arrangement.spacedBy(32.dp), // ボタン間のスペースを指定
+                verticalArrangement = Arrangement.spacedBy(32.dp)
             ) {
                 options.forEach { option ->
                     Button(
                         onClick = {
                             if (option == "元気") {
-                                score++
-                                if (score >= targetScore) {
-                                    // 結果画面にクリアしたかどうかのフラグを渡す際に、
-                                    // パラメータをしっかりと渡すために "result?isWin=true" の形に変更
+                                val newScore = score + 1
+                                viewModel.incrementScore()
+                                if (newScore >= targetScore) {
                                     navController.navigate("result?isWin=true")
                                 }
                             } else {
-                                // 間違えた場合に失敗画面に遷移
                                 navController.navigate("result?isWin=false")
                             }
-                            options = options.shuffled() //押した後再度シャッフル
+                            options = options.shuffled()
                         },
                         modifier = Modifier
-                            .fillMaxWidth() // ボタンを左右に広げる
-                            .padding(horizontal = 16.dp), // 左右に余白を追加してバランスを取る
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E90FF))
                     ) {
                         Text(option)
@@ -269,7 +289,11 @@ fun GameScreen(navController: NavController, difficulty: Int) {
     }
 }
 
-class GameViewModel(private val dataStore: DataStore<Preferences>) : ViewModel() {
+val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
+
+class GameViewModel(application: Application) : AndroidViewModel(application) {
+    private val dataStore = application.dataStore
+
     companion object {
         private val SCORE_KEY = intPreferencesKey("score")
     }
@@ -292,6 +316,11 @@ class GameViewModel(private val dataStore: DataStore<Preferences>) : ViewModel()
         saveScore(_score.value)
     }
 
+    fun resetScore() {
+        _score.value = 0
+        saveScore(0)
+    }
+
     private fun saveScore(newScore: Int) {
         viewModelScope.launch {
             dataStore.edit { preferences ->
@@ -303,29 +332,40 @@ class GameViewModel(private val dataStore: DataStore<Preferences>) : ViewModel()
 
 @Composable
 fun ResultScreen(navController: NavController, isWin: Boolean) {
+    val viewModel: GameViewModel = viewModel()
+
+    // スコアのリセット
+    LaunchedEffect(Unit) {
+        viewModel.resetScore()
+    }
+
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                text = if (isWin) {"クリア！"} else {"失敗…"},
+                text = if (isWin) "クリア！" else "失敗…",
                 fontSize = 50.sp,
                 color = Color.White,
                 style = TextStyle(
                     shadow = Shadow(
-                        color = Color.Cyan, // 縁取りの色
-                        offset = Offset(2f, 5f), // 影をずらして縁取りの効果を出す
-                        blurRadius = 1f // ぼかし具合を調整
+                        color = Color.Cyan,
+                        offset = Offset(2f, 5f),
+                        blurRadius = 1f
                     )
                 ),
             )
             Spacer(modifier = Modifier.height(16.dp))
-            Button(onClick = { navController.navigate("difficulty") },
+            Button(
+                onClick = {
+                    navController.navigate("difficulty") // 難易度選択画面に戻る
+                },
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E90FF)),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp)) {
+                    .padding(16.dp)
+            ) {
                 Text("もう一度プレイ")
             }
         }
@@ -348,12 +388,65 @@ fun ApiDataScreen(navController: NavController) {
     """
     val userList = Json.decodeFromString<List<ApiDataresult>>(json)
 
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally
+    // 背景色を追加するためにBoxを使用
+    Box(
+        modifier = Modifier
+            .fillMaxSize(),
+        contentAlignment = Alignment.Center
     ) {
-        userList.forEach { user ->
-            Text(text = "ユーザー名: ${user.username}, 難易度: ${user.difficulty}")
+        Image(
+            painter = painterResource(R.drawable.start_image),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(), // 画像を画面全体に広げる
+            contentScale = ContentScale.Crop
+        )
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(16.dp), // ユーザー間にスペースを追加
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            items(userList.size) { index ->
+                val user = userList[index]
+
+                // Cardを使って一つ一つのユーザーデータを整える
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth() // カードを画面幅に広げる
+                        .padding(8.dp) // 各カードにパディングを追加
+                        .shadow(8.dp, shape = RoundedCornerShape(16.dp)),
+                    shape = RoundedCornerShape(16.dp), // カードの角を丸くする
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .padding(16.dp), // カードの内側にパディング
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        // ユーザー名の表示
+                        Text(
+                            text = "ユーザー名: ${user.username}",
+                            fontSize = 20.sp,
+                            color = Color.Black,
+                            style = TextStyle(
+                                shadow = Shadow(
+                                    color = Color.Gray,
+                                    offset = Offset(2f, 2f),
+                                    blurRadius = 4f
+                                )
+                            )
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp)) // ユーザー名と難易度の間にスペース
+
+                        // 難易度の表示
+                        Text(
+                            text = "難易度: ${user.difficulty}",
+                            fontSize = 18.sp,
+                            color = Color.Gray,
+                        )
+                    }
+                }
+            }
         }
     }
 }
